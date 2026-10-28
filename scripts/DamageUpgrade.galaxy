@@ -1,0 +1,231 @@
+include "TriggerLibs/NativeLib"
+
+const int c_damageUpgradeStep = 1;
+
+string gv_damageUpgradeSelectedType = "";
+
+int DamageUpgrade_GetEffectCount(string unitTypeId) {
+    if (unitTypeId == "Zealot") {
+        return 1;
+    }
+
+    // 新单位：在这里登记伤害效果数量。
+    // 例如，确认追猎者有一个伤害效果后，添加：
+    if (unitTypeId == "Stalker") {
+        return 1;
+    }
+
+    return 0;
+}
+
+string DamageUpgrade_GetEffectId(string unitTypeId, int index) {
+    if (unitTypeId == "Zealot" && index == 0) {
+        return "PsiBlades";
+    }
+
+    // 新单位：在这里登记伤害效果 ID。
+    // 例如，确认追猎者的伤害效果 ID 后，添加：
+    if (unitTypeId == "Stalker" && index == 0) {
+        return "ParticleDisruptorsU";
+    }
+
+    return "";
+}
+
+bool DamageUpgrade_OnUnitSelected(bool testConds, bool runActions) {
+    unit u;
+    int player;
+    string unitTypeId;
+
+    if (!runActions) {
+        return true;
+    }
+
+    UIDisplayMessage(
+        PlayerGroupAll(),
+        c_messageAreaChat,
+        StringToText("DamageUpgrade DEBUG: selection event fired")
+    );
+
+    u = EventUnit();
+    player = EventPlayer();
+
+    if (u == null) {
+        UIDisplayMessage(
+            PlayerGroupAll(),
+            c_messageAreaChat,
+            StringToText("DamageUpgrade DEBUG: EventUnit is null")
+        );
+        return true;
+    }
+
+    unitTypeId = UnitGetType(u);
+    gv_damageUpgradeSelectedType = unitTypeId;
+
+    UIDisplayMessage(
+        PlayerGroupAll(),
+        c_messageAreaChat,
+        StringToText(
+            "DamageUpgrade DEBUG: selected " + unitTypeId
+        )
+    );
+
+    return true;
+}
+
+bool DamageUpgrade_OnHotkey(bool testConds, bool runActions) {
+    int player;
+    int i;
+    int effectCount;
+    int upgradedCount;
+    string unitTypeId;
+    string effectId;
+    bool modified;
+
+    if (!runActions) {
+        return true;
+    }
+
+    player = EventPlayer();
+    unitTypeId = gv_damageUpgradeSelectedType;
+
+    if (unitTypeId == "") {
+        UIDisplayMessage(
+            PlayerGroupAll(),
+            c_messageAreaChat,
+            StringToText("Select a unit first.")
+        );
+        return true;
+    }
+
+    effectCount = DamageUpgrade_GetEffectCount(unitTypeId);
+    upgradedCount = 0;
+
+    if (effectCount == 0) {
+        UIDisplayMessage(
+            PlayerGroupAll(),
+            c_messageAreaChat,
+            StringToText(
+                "DamageUpgrade: no effects registered for " + unitTypeId
+            )
+        );
+        return true;
+    }
+
+    for (i = 0; i < effectCount; i += 1) {
+        effectId = DamageUpgrade_GetEffectId(unitTypeId, i);
+
+        if (effectId != "") {
+            modified = CatalogFieldValueModify(
+                c_gameCatalogEffect,
+                effectId,
+                "Amount",
+                player,
+                IntToString(c_damageUpgradeStep),
+                c_upgradeOperationAdd
+            );
+
+            if (modified) {
+                upgradedCount += 1;
+            }
+        }
+    }
+
+    UIDisplayMessage(
+        PlayerGroupAll(),
+        c_messageAreaChat,
+        StringToText(
+            "DamageUpgrade: " + unitTypeId +
+            ", effects modified: " + IntToString(upgradedCount)
+        )
+    );
+
+    return true;
+}
+
+void DamageUpgrade_Init() {
+    trigger selectTrigger0;
+    trigger selectTrigger1;
+    trigger selectTrigger2;
+    trigger selectTrigger3;
+    trigger selectTrigger4;
+    trigger selectTrigger5;
+    trigger selectTrigger6;
+    trigger selectTrigger7;
+    trigger selectTrigger8;
+    trigger selectTrigger9;
+    trigger selectTrigger10;
+    trigger selectTrigger11;
+    trigger selectTrigger12;
+    trigger selectTrigger13;
+    trigger selectTrigger14;
+    trigger selectTrigger15;
+    trigger hotkeyTrigger;
+
+    gv_damageUpgradeSelectedType = "";
+
+    selectTrigger0 = TriggerCreate("DamageUpgrade_OnUnitSelected");
+    TriggerAddEventUnitSelected(selectTrigger0, null, 0, true);
+
+    selectTrigger1 = TriggerCreate("DamageUpgrade_OnUnitSelected");
+    TriggerAddEventUnitSelected(selectTrigger1, null, 1, true);
+
+    selectTrigger2 = TriggerCreate("DamageUpgrade_OnUnitSelected");
+    TriggerAddEventUnitSelected(selectTrigger2, null, 2, true);
+
+    selectTrigger3 = TriggerCreate("DamageUpgrade_OnUnitSelected");
+    TriggerAddEventUnitSelected(selectTrigger3, null, 3, true);
+
+    selectTrigger4 = TriggerCreate("DamageUpgrade_OnUnitSelected");
+    TriggerAddEventUnitSelected(selectTrigger4, null, 4, true);
+
+    selectTrigger5 = TriggerCreate("DamageUpgrade_OnUnitSelected");
+    TriggerAddEventUnitSelected(selectTrigger5, null, 5, true);
+
+    selectTrigger6 = TriggerCreate("DamageUpgrade_OnUnitSelected");
+    TriggerAddEventUnitSelected(selectTrigger6, null, 6, true);
+
+    selectTrigger7 = TriggerCreate("DamageUpgrade_OnUnitSelected");
+    TriggerAddEventUnitSelected(selectTrigger7, null, 7, true);
+
+    selectTrigger8 = TriggerCreate("DamageUpgrade_OnUnitSelected");
+    TriggerAddEventUnitSelected(selectTrigger8, null, 8, true);
+
+    selectTrigger9 = TriggerCreate("DamageUpgrade_OnUnitSelected");
+    TriggerAddEventUnitSelected(selectTrigger9, null, 9, true);
+
+    selectTrigger10 = TriggerCreate("DamageUpgrade_OnUnitSelected");
+    TriggerAddEventUnitSelected(selectTrigger10, null, 10, true);
+
+    selectTrigger11 = TriggerCreate("DamageUpgrade_OnUnitSelected");
+    TriggerAddEventUnitSelected(selectTrigger11, null, 11, true);
+
+    selectTrigger12 = TriggerCreate("DamageUpgrade_OnUnitSelected");
+    TriggerAddEventUnitSelected(selectTrigger12, null, 12, true);
+
+    selectTrigger13 = TriggerCreate("DamageUpgrade_OnUnitSelected");
+    TriggerAddEventUnitSelected(selectTrigger13, null, 13, true);
+
+    selectTrigger14 = TriggerCreate("DamageUpgrade_OnUnitSelected");
+    TriggerAddEventUnitSelected(selectTrigger14, null, 14, true);
+
+    selectTrigger15 = TriggerCreate("DamageUpgrade_OnUnitSelected");
+    TriggerAddEventUnitSelected(selectTrigger15, null, 15, true);
+
+    hotkeyTrigger = TriggerCreate("DamageUpgrade_OnHotkey");
+    TriggerAddEventKeyPressed(
+        hotkeyTrigger,
+        c_playerAny,
+        c_keyNumPad2,
+        true,
+        0,
+        0,
+        0
+    );
+
+    UIDisplayMessage(
+        PlayerGroupAll(),
+        c_messageAreaChat,
+        StringToText("DamageUpgrade DEBUG: initialized")
+    );
+}

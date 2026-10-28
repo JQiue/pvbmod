@@ -1,0 +1,331 @@
+// 每个玩家分别记录当前选中的单位类型。
+// SC2 玩家编号通常使用 0 到 15 的数组索引。
+string[16] g_LifeUpgrade_SelectedType;
+
+// 每次升级的属性参数
+const string LIFE_MULTIPLIER = "1.05";
+const string LIFE_BONUS = "7";
+const string LIFE_REGEN_BONUS = "0.1";
+
+bool LifeUpgrade_OnUnitSelected(bool testConds, bool runActions) {
+    int player = EventPlayer();
+    unit u = EventUnit();
+
+    if (!runActions) {
+        return true;
+    }
+
+
+    g_LifeUpgrade_SelectedType[player] = UnitGetType(u);
+
+    UIDisplayMessage(
+        PlayerGroupAll(),
+        c_messageAreaChat,
+        StringToText(
+            "Selected unit type: " +
+            g_LifeUpgrade_SelectedType[player]
+        )
+    );
+
+    return true;
+}
+
+// --------------------------------------------------
+// 对当前玩家记录的单位类型执行升级
+// --------------------------------------------------
+bool LifeUpgrade_Apply(bool testConds, bool runActions) {
+    int player = EventPlayer();
+    string unitTypeId = g_LifeUpgrade_SelectedType[player];
+
+    if (!runActions) {
+        return true;
+    }
+
+    if (unitTypeId == "") {
+        UIDisplayMessage(
+            PlayerGroupAll(),
+            c_messageAreaChat,
+            StringToText("Select a unit first.")
+        );
+        return true;
+    }
+
+    // 最大生命值：乘以 1.05，再加 7
+    CatalogFieldValueModify(
+        c_gameCatalogUnit,
+        unitTypeId,
+        "LifeMax",
+        player,
+        LIFE_MULTIPLIER,
+        c_upgradeOperationMultiply
+    );
+
+    CatalogFieldValueModify(
+        c_gameCatalogUnit,
+        unitTypeId,
+        "LifeMax",
+        player,
+        LIFE_BONUS,
+        c_upgradeOperationAdd
+    );
+
+    // 初始生命值：乘以 1.05，再加 7
+    CatalogFieldValueModify(
+        c_gameCatalogUnit,
+        unitTypeId,
+        "LifeStart",
+        player,
+        LIFE_MULTIPLIER,
+        c_upgradeOperationMultiply
+    );
+
+    CatalogFieldValueModify(
+        c_gameCatalogUnit,
+        unitTypeId,
+        "LifeStart",
+        player,
+        LIFE_BONUS,
+        c_upgradeOperationAdd
+    );
+
+    // 每秒生命回复增加 0.1
+    CatalogFieldValueModify(
+        c_gameCatalogUnit,
+        unitTypeId,
+        "LifeRegenRate",
+        player,
+        LIFE_REGEN_BONUS,
+        c_upgradeOperationAdd
+    );
+
+    UIDisplayMessage(
+        PlayerGroupAll(),
+        c_messageAreaChat,
+        StringToText("Life upgrade applied: " + unitTypeId)
+    );
+
+    return true;
+}
+
+bool LifeUpgrade_DebugWeapon(bool testConds, bool runActions) {
+    unit u;
+    int player;
+    string unitTypeId;
+    string weaponId;
+    string displayEffect;
+    string weaponEffect;
+    string burstEffect;
+    string effectScope;
+    string amountValue;
+    string nextEffect;
+    string periodCount;
+    bool hasAmount;
+    bool hasEffect;
+    bool hasPeriodCount;
+
+    if (!runActions) {
+        return true;
+    }
+
+    u = EventUnit();
+    player = EventPlayer();
+
+    if (u == null) {
+        UIDisplayMessage(
+            PlayerGroupAll(),
+            c_messageAreaChat,
+            StringToText("Debug error: EventUnit is null.")
+        );
+        return true;
+    }
+
+    unitTypeId = UnitGetType(u);
+
+    UIDisplayMessage(
+        PlayerGroupAll(),
+        c_messageAreaChat,
+        StringToText("Unit type: " + unitTypeId)
+    );
+
+    if (UnitWeaponCount(u) < 1) {
+        UIDisplayMessage(
+            PlayerGroupAll(),
+            c_messageAreaChat,
+            StringToText("This unit has no weapon.")
+        );
+        return true;
+    }
+
+    weaponId = UnitWeaponGet(u, 1);
+
+    displayEffect = CatalogFieldValueGet(
+        c_gameCatalogWeapon,
+        weaponId,
+        "DisplayEffect",
+        player
+    );
+
+    weaponEffect = CatalogFieldValueGet(
+        c_gameCatalogWeapon,
+        weaponId,
+        "Effect",
+        player
+    );
+
+    UIDisplayMessage(
+        PlayerGroupAll(),
+        c_messageAreaChat,
+        StringToText("Weapon: " + weaponId)
+    );
+
+    UIDisplayMessage(
+        PlayerGroupAll(),
+        c_messageAreaChat,
+        StringToText("DisplayEffect: " + displayEffect)
+    );
+
+    UIDisplayMessage(
+        PlayerGroupAll(),
+        c_messageAreaChat,
+        StringToText("Weapon Effect: " + weaponEffect)
+    );
+
+    burstEffect = weaponEffect;
+
+    if (burstEffect == "") {
+        UIDisplayMessage(
+            PlayerGroupAll(),
+            c_messageAreaChat,
+            StringToText("Weapon Effect is empty; cannot inspect effect.")
+        );
+        return true;
+    }
+
+    effectScope = CatalogEntryScope(
+        c_gameCatalogEffect,
+        burstEffect
+    );
+
+    UIDisplayMessage(
+        PlayerGroupAll(),
+        c_messageAreaChat,
+        StringToText("Effect ID: " + burstEffect)
+    );
+
+    UIDisplayMessage(
+        PlayerGroupAll(),
+        c_messageAreaChat,
+        StringToText("Effect Scope: " + effectScope)
+    );
+
+    hasAmount = CatalogFieldExists(effectScope, "Amount");
+    hasEffect = CatalogFieldExists(effectScope, "Effect");
+    hasPeriodCount = CatalogFieldExists(effectScope, "PeriodCount");
+
+    UIDisplayMessage(
+        PlayerGroupAll(),
+        c_messageAreaChat,
+        StringToText(
+            "Has Amount field: " + "true"
+        )
+    );
+
+    UIDisplayMessage(
+        PlayerGroupAll(),
+        c_messageAreaChat,
+        StringToText(
+            "Has Effect field: " + "true"
+        )
+    );
+
+    UIDisplayMessage(
+        PlayerGroupAll(),
+        c_messageAreaChat,
+        StringToText(
+            "Has PeriodCount field: " + "true"
+        )
+    );
+
+    if (hasAmount) {
+        amountValue = CatalogFieldValueGet(
+            c_gameCatalogEffect,
+            burstEffect,
+            "Amount",
+            player
+        );
+
+        UIDisplayMessage(
+            PlayerGroupAll(),
+            c_messageAreaChat,
+            StringToText("Amount: " + amountValue)
+        );
+    }
+
+    if (hasEffect) {
+        nextEffect = CatalogFieldValueGet(
+            c_gameCatalogEffect,
+            burstEffect,
+            "Effect",
+            player
+        );
+
+        UIDisplayMessage(
+            PlayerGroupAll(),
+            c_messageAreaChat,
+            StringToText("PsiBladesBurst Effect = [" + nextEffect + "]")
+        );
+    }
+
+    if (hasPeriodCount) {
+        periodCount = CatalogFieldValueGet(
+            c_gameCatalogEffect,
+            burstEffect,
+            "PeriodCount",
+            player
+        );
+
+        UIDisplayMessage(
+            PlayerGroupAll(),
+            c_messageAreaChat,
+            StringToText("PeriodCount: " + periodCount)
+        );
+    }
+
+    return true;
+}
+
+// --------------------------------------------------
+// 初始化两个事件
+// --------------------------------------------------
+void LifeUpgrade_Init() {
+    trigger selectTrigger;
+    trigger hotkeyTrigger;
+    trigger debugTrigger;
+
+    selectTrigger = TriggerCreate("LifeUpgrade_OnUnitSelected");
+    TriggerAddEventUnitSelected(
+        selectTrigger,
+        null,
+        c_playerAny,
+        true
+    );
+
+    hotkeyTrigger = TriggerCreate("LifeUpgrade_Apply");
+    TriggerAddEventKeyPressed(
+        hotkeyTrigger,
+        c_playerAny,
+        c_keyNumPad1,
+        true,
+        0,
+        0,
+        0
+    );
+
+    debugTrigger = TriggerCreate("LifeUpgrade_DebugWeapon");
+    TriggerAddEventUnitSelected(
+        debugTrigger,
+        null,
+        c_playerAny,
+        true
+    );
+}

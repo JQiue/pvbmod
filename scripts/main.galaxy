@@ -1,0 +1,7 @@
+include "scripts/LifeUpgrade"
+include "scripts/DamageUpgrade"
+
+void main() {
+  LifeUpgrade_Init();
+  DamageUpgrade_Init();
+}
