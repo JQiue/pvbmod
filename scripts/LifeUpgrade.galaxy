@@ -1,331 +1,144 @@
-// 每个玩家分别记录当前选中的单位类型。
-// SC2 玩家编号通常使用 0 到 15 的数组索引。
-string[16] g_LifeUpgrade_SelectedType;
+//--------------------------------------------------------------------------------------------------
+// 生命升级
+//
+// 按小键盘 4：对当前选中的单位生效。
+// 每次升级：最大生命与初始生命 ×1.05 再 +7，每秒生命回复 +0.1。
+//
+// 可变形单位会一次性升级它的所有形态（见 scripts/UnitFamily）。
+// 选择状态由 scripts/Selection 维护。
+//--------------------------------------------------------------------------------------------------
 
-// 每次升级的属性参数
-const string LIFE_MULTIPLIER = "1.05";
-const string LIFE_BONUS = "7";
-const string LIFE_REGEN_BONUS = "0.1";
+include "TriggerLibs/NativeLib"
 
-bool LifeUpgrade_OnUnitSelected(bool testConds, bool runActions) {
-    int player = EventPlayer();
-    unit u = EventUnit();
+const string c_lifeUpgradeMultiplier = "1.05";
+const string c_lifeUpgradeBonus = "7";
+const string c_lifeUpgradeRegenBonus = "0.1";
 
-    if (!runActions) {
-        return true;
-    }
-
-
-    g_LifeUpgrade_SelectedType[player] = UnitGetType(u);
-
+void LifeUpgrade_Notify(int player, string inText) {
     UIDisplayMessage(
-        PlayerGroupAll(),
+        PlayerGroupSingle(player),
         c_messageAreaChat,
-        StringToText(
-            "Selected unit type: " +
-            g_LifeUpgrade_SelectedType[player]
-        )
+        StringToText(inText)
     );
-
-    return true;
 }
 
-// --------------------------------------------------
-// 对当前玩家记录的单位类型执行升级
-// --------------------------------------------------
+// 修改一个字段，成功返回 1，失败返回 0。
+int LifeUpgrade_ModifyField(string unitTypeId, int player, string field, string value, int operation) {
+    if (CatalogFieldValueModify(c_gameCatalogUnit, unitTypeId, field, player, value, operation)) {
+        return 1;
+    }
+
+    return 0;
+}
+
+// 对一个单位类型执行升级，返回成功的字段数量。
+int LifeUpgrade_ApplyToType(string unitTypeId, int player) {
+    int applied;
+
+    applied = 0;
+
+    applied += LifeUpgrade_ModifyField(
+        unitTypeId, player, "LifeMax",
+        c_lifeUpgradeMultiplier, c_upgradeOperationMultiply
+    );
+    applied += LifeUpgrade_ModifyField(
+        unitTypeId, player, "LifeMax",
+        c_lifeUpgradeBonus, c_upgradeOperationAdd
+    );
+    applied += LifeUpgrade_ModifyField(
+        unitTypeId, player, "LifeStart",
+        c_lifeUpgradeMultiplier, c_upgradeOperationMultiply
+    );
+    applied += LifeUpgrade_ModifyField(
+        unitTypeId, player, "LifeStart",
+        c_lifeUpgradeBonus, c_upgradeOperationAdd
+    );
+    applied += LifeUpgrade_ModifyField(
+        unitTypeId, player, "LifeRegenRate",
+        c_lifeUpgradeRegenBonus, c_upgradeOperationAdd
+    );
+
+    return applied;
+}
+
 bool LifeUpgrade_Apply(bool testConds, bool runActions) {
-    int player = EventPlayer();
-    string unitTypeId = g_LifeUpgrade_SelectedType[player];
-
-    if (!runActions) {
-        return true;
-    }
-
-    if (unitTypeId == "") {
-        UIDisplayMessage(
-            PlayerGroupAll(),
-            c_messageAreaChat,
-            StringToText("Select a unit first.")
-        );
-        return true;
-    }
-
-    // 最大生命值：乘以 1.05，再加 7
-    CatalogFieldValueModify(
-        c_gameCatalogUnit,
-        unitTypeId,
-        "LifeMax",
-        player,
-        LIFE_MULTIPLIER,
-        c_upgradeOperationMultiply
-    );
-
-    CatalogFieldValueModify(
-        c_gameCatalogUnit,
-        unitTypeId,
-        "LifeMax",
-        player,
-        LIFE_BONUS,
-        c_upgradeOperationAdd
-    );
-
-    // 初始生命值：乘以 1.05，再加 7
-    CatalogFieldValueModify(
-        c_gameCatalogUnit,
-        unitTypeId,
-        "LifeStart",
-        player,
-        LIFE_MULTIPLIER,
-        c_upgradeOperationMultiply
-    );
-
-    CatalogFieldValueModify(
-        c_gameCatalogUnit,
-        unitTypeId,
-        "LifeStart",
-        player,
-        LIFE_BONUS,
-        c_upgradeOperationAdd
-    );
-
-    // 每秒生命回复增加 0.1
-    CatalogFieldValueModify(
-        c_gameCatalogUnit,
-        unitTypeId,
-        "LifeRegenRate",
-        player,
-        LIFE_REGEN_BONUS,
-        c_upgradeOperationAdd
-    );
-
-    UIDisplayMessage(
-        PlayerGroupAll(),
-        c_messageAreaChat,
-        StringToText("Life upgrade applied: " + unitTypeId)
-    );
-
-    return true;
-}
-
-bool LifeUpgrade_DebugWeapon(bool testConds, bool runActions) {
-    unit u;
     int player;
     string unitTypeId;
-    string weaponId;
-    string displayEffect;
-    string weaponEffect;
-    string burstEffect;
-    string effectScope;
-    string amountValue;
-    string nextEffect;
-    string periodCount;
-    bool hasAmount;
-    bool hasEffect;
-    bool hasPeriodCount;
+    int i;
+    int j;
+    int linkedStart;
+    int linkedModified;
+    int modifiedForms;
+    string outText;
 
     if (!runActions) {
         return true;
     }
 
-    u = EventUnit();
     player = EventPlayer();
+    unitTypeId = g_selectedUnitType[player];
 
-    if (u == null) {
-        UIDisplayMessage(
-            PlayerGroupAll(),
-            c_messageAreaChat,
-            StringToText("Debug error: EventUnit is null.")
-        );
+    if (unitTypeId == "") {
+        LifeUpgrade_Notify(player, "Select a unit first.");
         return true;
     }
 
-    unitTypeId = UnitGetType(u);
+    UnitFamily_Collect(unitTypeId, player);
 
-    UIDisplayMessage(
-        PlayerGroupAll(),
-        c_messageAreaChat,
-        StringToText("Unit type: " + unitTypeId)
-    );
+    UnitLinks_Reset();
 
-    if (UnitWeaponCount(u) < 1) {
-        UIDisplayMessage(
-            PlayerGroupAll(),
-            c_messageAreaChat,
-            StringToText("This unit has no weapon.")
-        );
+    modifiedForms = 0;
+    linkedModified = 0;
+
+    for (i = 0; i < g_unitFamilyCount; i += 1) {
+        linkedStart = g_unitLinkCount;
+
+        UnitLinks_CollectFromAbilities(g_unitFamily[i], player);
+        UnitLinks_CollectFromExtraTable(g_unitFamily[i]);
+
+        if (LifeUpgrade_ApplyToType(g_unitFamily[i], player) > 0) {
+            modifiedForms += 1;
+        }
+
+        // 只跟进一层关联单位：航母的拦截机、巢虫领主的巢虫等。
+        for (j = linkedStart; j < g_unitLinkCount; j += 1) {
+            if (LifeUpgrade_ApplyToType(g_unitLinkType[j], player) > 0) {
+                linkedModified += 1;
+            }
+        }
+    }
+
+    if (modifiedForms == 0) {
+        LifeUpgrade_Notify(player, "Life upgrade failed: " + unitTypeId);
         return true;
     }
 
-    weaponId = UnitWeaponGet(u, 1);
+    outText = "Life upgrade: " + unitTypeId;
 
-    displayEffect = CatalogFieldValueGet(
-        c_gameCatalogWeapon,
-        weaponId,
-        "DisplayEffect",
-        player
-    );
-
-    weaponEffect = CatalogFieldValueGet(
-        c_gameCatalogWeapon,
-        weaponId,
-        "Effect",
-        player
-    );
-
-    UIDisplayMessage(
-        PlayerGroupAll(),
-        c_messageAreaChat,
-        StringToText("Weapon: " + weaponId)
-    );
-
-    UIDisplayMessage(
-        PlayerGroupAll(),
-        c_messageAreaChat,
-        StringToText("DisplayEffect: " + displayEffect)
-    );
-
-    UIDisplayMessage(
-        PlayerGroupAll(),
-        c_messageAreaChat,
-        StringToText("Weapon Effect: " + weaponEffect)
-    );
-
-    burstEffect = weaponEffect;
-
-    if (burstEffect == "") {
-        UIDisplayMessage(
-            PlayerGroupAll(),
-            c_messageAreaChat,
-            StringToText("Weapon Effect is empty; cannot inspect effect.")
-        );
-        return true;
+    if (g_unitFamilyCount > 1) {
+        outText = outText + " (" + IntToString(g_unitFamilyCount) + " forms)";
     }
 
-    effectScope = CatalogEntryScope(
-        c_gameCatalogEffect,
-        burstEffect
-    );
-
-    UIDisplayMessage(
-        PlayerGroupAll(),
-        c_messageAreaChat,
-        StringToText("Effect ID: " + burstEffect)
-    );
-
-    UIDisplayMessage(
-        PlayerGroupAll(),
-        c_messageAreaChat,
-        StringToText("Effect Scope: " + effectScope)
-    );
-
-    hasAmount = CatalogFieldExists(effectScope, "Amount");
-    hasEffect = CatalogFieldExists(effectScope, "Effect");
-    hasPeriodCount = CatalogFieldExists(effectScope, "PeriodCount");
-
-    UIDisplayMessage(
-        PlayerGroupAll(),
-        c_messageAreaChat,
-        StringToText(
-            "Has Amount field: " + "true"
-        )
-    );
-
-    UIDisplayMessage(
-        PlayerGroupAll(),
-        c_messageAreaChat,
-        StringToText(
-            "Has Effect field: " + "true"
-        )
-    );
-
-    UIDisplayMessage(
-        PlayerGroupAll(),
-        c_messageAreaChat,
-        StringToText(
-            "Has PeriodCount field: " + "true"
-        )
-    );
-
-    if (hasAmount) {
-        amountValue = CatalogFieldValueGet(
-            c_gameCatalogEffect,
-            burstEffect,
-            "Amount",
-            player
-        );
-
-        UIDisplayMessage(
-            PlayerGroupAll(),
-            c_messageAreaChat,
-            StringToText("Amount: " + amountValue)
-        );
+    if (linkedModified > 0) {
+        outText = outText + " +links(" + IntToString(linkedModified) + ")";
     }
 
-    if (hasEffect) {
-        nextEffect = CatalogFieldValueGet(
-            c_gameCatalogEffect,
-            burstEffect,
-            "Effect",
-            player
-        );
-
-        UIDisplayMessage(
-            PlayerGroupAll(),
-            c_messageAreaChat,
-            StringToText("PsiBladesBurst Effect = [" + nextEffect + "]")
-        );
-    }
-
-    if (hasPeriodCount) {
-        periodCount = CatalogFieldValueGet(
-            c_gameCatalogEffect,
-            burstEffect,
-            "PeriodCount",
-            player
-        );
-
-        UIDisplayMessage(
-            PlayerGroupAll(),
-            c_messageAreaChat,
-            StringToText("PeriodCount: " + periodCount)
-        );
-    }
+    LifeUpgrade_Notify(player, outText);
 
     return true;
 }
 
-// --------------------------------------------------
-// 初始化两个事件
-// --------------------------------------------------
 void LifeUpgrade_Init() {
-    trigger selectTrigger;
     trigger hotkeyTrigger;
-    trigger debugTrigger;
-
-    selectTrigger = TriggerCreate("LifeUpgrade_OnUnitSelected");
-    TriggerAddEventUnitSelected(
-        selectTrigger,
-        null,
-        c_playerAny,
-        true
-    );
 
     hotkeyTrigger = TriggerCreate("LifeUpgrade_Apply");
     TriggerAddEventKeyPressed(
         hotkeyTrigger,
         c_playerAny,
-        c_keyNumPad1,
+        c_keyNumPad4,
         true,
-        0,
-        0,
-        0
-    );
-
-    debugTrigger = TriggerCreate("LifeUpgrade_DebugWeapon");
-    TriggerAddEventUnitSelected(
-        debugTrigger,
-        null,
-        c_playerAny,
-        true
+        c_keyModifierStateExclude,
+        c_keyModifierStateExclude,
+        c_keyModifierStateExclude
     );
 }

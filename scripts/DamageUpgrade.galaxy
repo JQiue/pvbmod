@@ -1,231 +1,453 @@
+//--------------------------------------------------------------------------------------------------
+// 伤害升级
+//
+// 按小键盘 1：对当前选中的单位类型生效。
+//
+// 不维护单位清单：从单位类型的武器出发，沿 Effect 目录里的链接递归向下走：
+//   - 普通链接字段：Effect / ImpactEffect / InitialEffect / PeriodicEffectArray …
+//   - 结构体数组：CEffectEnumArea.AreaArray、CEffectSwitch.CaseArray、CEffectCreateUnit.InfoArray…
+//     这类数组的元素本身不是链接，真正的链接在它的子字段里（AreaArray[i].Effect 等）。
+// 凡是遇到 CEffectDamage 就把它的 Amount +1。
+//
+// 另外会跟进"关联单位"：航母的拦截机（CAbilArmMagazine 的 InfoArray.Unit）、
+// 巢虫领主的巢虫（CEffectCreateUnit.SpawnUnit）等，让它们的伤害一起升级。
+//
+// 已访问过的 Effect 只处理一次，避免同一效果被重复加成或陷入循环引用。
+// 可变形单位会一次性处理它所有形态的武器（见 scripts/UnitFamily）。
+// 选择状态由 scripts/Selection 维护。
+//--------------------------------------------------------------------------------------------------
+
 include "TriggerLibs/NativeLib"
 
 const int c_damageUpgradeStep = 1;
+const int c_damageWalkCapacity = 128;
+const int c_damageDebugLineLimit = 200;
 
-string gv_damageUpgradeSelectedType = "";
+// 调试开关：需要逐步核对遍历结果时改成 true，会打印每条武器/效果/数组字段。
+const bool c_damageUpgradeVerbose = false;
 
-int DamageUpgrade_GetEffectCount(string unitTypeId) {
-    if (unitTypeId == "Zealot") {
-        return 1;
-    }
+// 诊断开关：临时打开，会在每次按键后打印"遍历到的效果 id 链"，
+// 用来确认巢虫领主的 CEffectCreateUnit 到底有没有被走到。排查完记得改回 false。
+const bool c_damageUpgradeTrace = false;
 
-    // 新单位：在这里登记伤害效果数量。
-    // 例如，确认追猎者有一个伤害效果后，添加：
-    if (unitTypeId == "Stalker") {
-        return 1;
-    }
+// 广度优先遍历用的一次性缓冲，每次按键前清空。
+string[128] g_damageUpgradeFrontier;
+int g_damageUpgradeFrontierCount = 0;
+string[128] g_damageUpgradeVisited;
+int g_damageUpgradeVisitedCount = 0;
 
-    return 0;
-}
+// 当前形态命中的伤害效果数。包含"本次按键里已经被别的形态加过"的效果，
+// 这样共用同一把武器的形态（例如潜伏者地上/地下）也会算作已覆盖。
+int g_damageUpgradeFormDamage = 0;
 
-string DamageUpgrade_GetEffectId(string unitTypeId, int index) {
-    if (unitTypeId == "Zealot" && index == 0) {
-        return "PsiBlades";
-    }
+int g_damageUpgradeDebugLines = 0;
 
-    // 新单位：在这里登记伤害效果 ID。
-    // 例如，确认追猎者的伤害效果 ID 后，添加：
-    if (unitTypeId == "Stalker" && index == 0) {
-        return "ParticleDisruptorsU";
-    }
-
-    return "";
-}
-
-bool DamageUpgrade_OnUnitSelected(bool testConds, bool runActions) {
-    unit u;
-    int player;
-    string unitTypeId;
-
-    if (!runActions) {
-        return true;
-    }
-
+void DamageUpgrade_Notify(int player, string inText) {
     UIDisplayMessage(
-        PlayerGroupAll(),
+        PlayerGroupSingle(player),
         c_messageAreaChat,
-        StringToText("DamageUpgrade DEBUG: selection event fired")
+        StringToText(inText)
     );
-
-    u = EventUnit();
-    player = EventPlayer();
-
-    if (u == null) {
-        UIDisplayMessage(
-            PlayerGroupAll(),
-            c_messageAreaChat,
-            StringToText("DamageUpgrade DEBUG: EventUnit is null")
-        );
-        return true;
-    }
-
-    unitTypeId = UnitGetType(u);
-    gv_damageUpgradeSelectedType = unitTypeId;
-
-    UIDisplayMessage(
-        PlayerGroupAll(),
-        c_messageAreaChat,
-        StringToText(
-            "DamageUpgrade DEBUG: selected " + unitTypeId
-        )
-    );
-
-    return true;
 }
 
-bool DamageUpgrade_OnHotkey(bool testConds, bool runActions) {
-    int player;
+void DamageUpgrade_DebugLine(int player, string inText) {
+    if (!c_damageUpgradeVerbose) {
+        return;
+    }
+
+    if (g_damageUpgradeDebugLines >= c_damageDebugLineLimit) {
+        return;
+    }
+
+    g_damageUpgradeDebugLines += 1;
+    DamageUpgrade_Notify(player, inText);
+}
+
+void DamageUpgrade_ResetWalk() {
+    g_damageUpgradeFrontierCount = 0;
+    g_damageUpgradeVisitedCount = 0;
+    UnitLinks_Reset();
+    g_damageUpgradeDebugLines = 0;
+}
+
+bool DamageUpgrade_IsVisited(string effectId) {
     int i;
-    int effectCount;
-    int upgradedCount;
-    string unitTypeId;
-    string effectId;
-    bool modified;
 
-    if (!runActions) {
-        return true;
+    for (i = 0; i < g_damageUpgradeVisitedCount; i += 1) {
+        if (g_damageUpgradeVisited[i] == effectId) {
+            return true;
+        }
     }
 
-    player = EventPlayer();
-    unitTypeId = gv_damageUpgradeSelectedType;
+    return false;
+}
 
-    if (unitTypeId == "") {
-        UIDisplayMessage(
-            PlayerGroupAll(),
-            c_messageAreaChat,
-            StringToText("Select a unit first.")
-        );
-        return true;
+// 只接受目录里真实存在的 Effect，其它链接（音效、Actor 等）会被过滤掉。
+void DamageUpgrade_Push(string effectId) {
+    if (effectId == "") {
+        return;
     }
 
-    effectCount = DamageUpgrade_GetEffectCount(unitTypeId);
-    upgradedCount = 0;
-
-    if (effectCount == 0) {
-        UIDisplayMessage(
-            PlayerGroupAll(),
-            c_messageAreaChat,
-            StringToText(
-                "DamageUpgrade: no effects registered for " + unitTypeId
-            )
-        );
-        return true;
+    if (!CatalogEntryIsValid(c_gameCatalogEffect, effectId)) {
+        return;
     }
 
-    for (i = 0; i < effectCount; i += 1) {
-        effectId = DamageUpgrade_GetEffectId(unitTypeId, i);
+    if (DamageUpgrade_IsVisited(effectId)) {
+        return;
+    }
 
-        if (effectId != "") {
-            modified = CatalogFieldValueModify(
-                c_gameCatalogEffect,
-                effectId,
-                "Amount",
-                player,
-                IntToString(c_damageUpgradeStep),
-                c_upgradeOperationAdd
+    if (g_damageUpgradeFrontierCount >= c_damageWalkCapacity) {
+        return;
+    }
+
+    g_damageUpgradeFrontier[g_damageUpgradeFrontierCount] = effectId;
+    g_damageUpgradeFrontierCount += 1;
+}
+
+// 只有这些 scope 的 AreaArray / CaseArray 才带 Effect 子字段（数据里扫出来的全集）。
+// 比如 CEffectDamage 也有 AreaArray，但它的子字段只有 Radius / Fraction，
+// 对它读 .Effect 会刷"无法读取目录字段"的触发器报错。
+bool DamageUpgrade_HasEffectSubField(string scope, string field) {
+    if (field == "AreaArray") {
+        return scope == "CEffectEnumArea" ||
+            scope == "CEffectSet" ||
+            scope == "CEffectLaunchMissile";
+    }
+
+    if (field == "CaseArray") {
+        return scope == "CEffectSwitch";
+    }
+
+    return false;
+}
+
+// 遍历一条效果链，返回被修改的 CEffectDamage 数量。
+int DamageUpgrade_ApplyEffectChain(string effectId, int player) {
+    int total;
+    int index;
+    int fieldCount;
+    int fieldIndex;
+    int valueCount;
+    int valueIndex;
+    string currentId;
+    string scope;
+    string field;
+    string path;
+    string nextId;
+    string amount;
+    string beforeAmount;
+
+    total = 0;
+    index = 0;
+    amount = IntToString(c_damageUpgradeStep);
+
+    // 每条效果链使用独立的队列，已访问集合在同一次按键内全局共享。
+    g_damageUpgradeFrontierCount = 0;
+
+    DamageUpgrade_Push(effectId);
+
+    while (index < g_damageUpgradeFrontierCount) {
+        currentId = g_damageUpgradeFrontier[index];
+        index += 1;
+
+        scope = CatalogEntryScope(c_gameCatalogEffect, currentId);
+
+        if (scope == "") {
+            continue;
+        }
+
+        if (DamageUpgrade_IsVisited(currentId)) {
+            // 已经被前面的形态加过，但仍属于当前形态的伤害链路。
+            if (scope == "CEffectDamage") {
+                g_damageUpgradeFormDamage += 1;
+            }
+
+            continue;
+        }
+
+        if (g_damageUpgradeVisitedCount >= c_damageWalkCapacity) {
+            break;
+        }
+
+        g_damageUpgradeVisited[g_damageUpgradeVisitedCount] = currentId;
+        g_damageUpgradeVisitedCount += 1;
+
+        DamageUpgrade_DebugLine(player, "  e " + currentId + " " + scope);
+
+        if (c_damageUpgradeTrace) {
+            DamageUpgrade_Notify(player, "  " + currentId + " [" + scope + "]");
+        }
+
+        if (scope == "CEffectDamage") {
+            g_damageUpgradeFormDamage += 1;
+
+            beforeAmount = CatalogFieldValueGet(
+                c_gameCatalogEffect, currentId, "Amount", player
             );
 
-            if (modified) {
-                upgradedCount += 1;
+            if (CatalogFieldValueModify(
+                c_gameCatalogEffect,
+                currentId,
+                "Amount",
+                player,
+                amount,
+                c_upgradeOperationAdd
+            )) {
+                total += 1;
+                DamageUpgrade_DebugLine(
+                    player, "    +1 " + currentId + " " + beforeAmount + " -> " +
+                    CatalogFieldValueGet(
+                        c_gameCatalogEffect, currentId, "Amount", player
+                    )
+                );
+            } else {
+                DamageUpgrade_DebugLine(
+                    player, "    ! " + currentId + " Amount 修改失败"
+                );
+            }
+        }
+
+        // 扫描该 Effect 的所有字段，凡是取值能对上 Effect 目录的链接就继续向下走。
+        // 同一趟里也认单位类型：造兵类效果（CEffectCreateUnit 的 SpawnUnit 等）
+        // 造出来的单位会被记成关联单位。不按字段名单独读 SpawnUnit，
+        // 因为有的造兵效果没有这个字段，硬读会刷"无法读取目录字段"的报错。
+        fieldCount = CatalogFieldCount(scope);
+
+        for (fieldIndex = 0; fieldIndex < fieldCount; fieldIndex += 1) {
+            field = CatalogFieldGet(scope, fieldIndex);
+
+            if (CatalogFieldIsArray(scope, field)) {
+                valueCount = CatalogFieldValueCount(
+                    c_gameCatalogEffect, currentId, field, player
+                );
+
+                if (valueCount > 0) {
+                    DamageUpgrade_DebugLine(
+                        player, "    a " + field + " n=" + IntToString(valueCount)
+                    );
+                }
+
+                for (valueIndex = 0; valueIndex < valueCount; valueIndex += 1) {
+                    path = field + "[" + IntToString(valueIndex) + "]";
+
+                    nextId = CatalogFieldValueGet(
+                        c_gameCatalogEffect, currentId, path, player
+                    );
+
+                    if (CatalogEntryIsValid(c_gameCatalogEffect, nextId)) {
+                        DamageUpgrade_DebugLine(player, "      " + path + " = " + nextId);
+                        DamageUpgrade_Push(nextId);
+                    } else if (DamageUpgrade_HasEffectSubField(scope, field)) {
+                        // 结构体数组：真正的链接在子字段里。
+                        nextId = CatalogFieldValueGet(
+                            c_gameCatalogEffect, currentId, path + ".Effect", player
+                        );
+
+                        DamageUpgrade_DebugLine(
+                            player, "      " + path + ".Effect = " + nextId
+                        );
+
+                        DamageUpgrade_Push(nextId);
+                    }
+                }
+            } else {
+                // 普通字段：值是 Effect 链接就收下（不是就当成音效/Actor 之类的无关值丢掉）；
+                // 值是单位类型就记成关联单位（巢虫领主的巢虫、虫群宿主的蝗虫等）。
+                nextId = CatalogFieldValueGet(
+                    c_gameCatalogEffect, currentId, field, player
+                );
+
+                if (CatalogEntryIsValid(c_gameCatalogUnit, nextId)) {
+                    UnitLinks_Add(nextId);
+                }
+
+                DamageUpgrade_Push(nextId);
             }
         }
     }
 
-    UIDisplayMessage(
-        PlayerGroupAll(),
-        c_messageAreaChat,
-        StringToText(
-            "DamageUpgrade: " + unitTypeId +
-            ", effects modified: " + IntToString(upgradedCount)
-        )
+    return total;
+}
+
+// 沿单位类型的所有武器应用伤害升级，返回被修改的 CEffectDamage 数量。
+int DamageUpgrade_ApplyWeapons(string unitTypeId, int player) {
+    int total;
+    int weaponCount;
+    int i;
+    string weaponId;
+    string scope;
+    string effectId;
+
+    total = 0;
+
+    weaponCount = CatalogFieldValueCount(
+        c_gameCatalogUnit, unitTypeId, "WeaponArray", player
     );
+
+    if (weaponCount == 0) {
+        DamageUpgrade_DebugLine(player, "  w " + unitTypeId + " (无武器)");
+    }
+
+    for (i = 0; i < weaponCount; i += 1) {
+        weaponId = CatalogFieldValueGet(
+            c_gameCatalogUnit,
+            unitTypeId,
+            "WeaponArray[" + IntToString(i) + "].Link",
+            player
+        );
+
+        if (weaponId == "") {
+            DamageUpgrade_DebugLine(
+                player, "  w " + unitTypeId + "[" + IntToString(i) + "] 空"
+            );
+            continue;
+        }
+
+        if (!CatalogEntryIsValid(c_gameCatalogWeapon, weaponId)) {
+            DamageUpgrade_DebugLine(
+                player, "  w " + unitTypeId + " " + weaponId + " 无效"
+            );
+            continue;
+        }
+
+        scope = CatalogEntryScope(c_gameCatalogWeapon, weaponId);
+
+        effectId = CatalogFieldValueGet(
+            c_gameCatalogWeapon, weaponId, "Effect", player
+        );
+
+        DamageUpgrade_DebugLine(
+            player, "  w " + unitTypeId + " " + weaponId + " " + scope + " -> " + effectId
+        );
+
+        total += DamageUpgrade_ApplyEffectChain(effectId, player);
+    }
+
+    return total;
+}
+
+// 处理一个单位类型：自己的武器 + 它衍生出来的关联单位的武器。
+int DamageUpgrade_ApplyUnitType(string unitTypeId, int player) {
+    int total;
+    int i;
+    int linkedStart;
+
+    total = 0;
+    g_damageUpgradeFormDamage = 0;
+    if (c_damageUpgradeTrace) {
+        DamageUpgrade_Notify(player, "T " + unitTypeId);
+    }
+
+    linkedStart = g_unitLinkCount;
+
+    UnitLinks_CollectFromAbilities(unitTypeId, player);
+    UnitLinks_CollectFromExtraTable(unitTypeId);
+
+    total += DamageUpgrade_ApplyWeapons(unitTypeId, player);
+
+    // 只跟进一层关联单位，避免互相召唤时无限递归。
+    for (i = linkedStart; i < g_unitLinkCount; i += 1) {
+        DamageUpgrade_DebugLine(player, "  linked " + g_unitLinkType[i]);
+
+        total += DamageUpgrade_ApplyWeapons(g_unitLinkType[i], player);
+    }
+
+
+
+    return total;
+}
+
+bool DamageUpgrade_OnHotkey(bool testConds, bool runActions) {
+    int player;
+    string unitTypeId;
+    int i;
+    int modified;
+    int modifiedForms;
+    int formModified;
+    string outText;
+    string linksText;
+
+    if (!runActions) {
+        return true;
+    }
+
+    player = EventPlayer();
+    unitTypeId = g_selectedUnitType[player];
+
+    if (unitTypeId == "") {
+        DamageUpgrade_Notify(player, "Select a unit first.");
+        return true;
+    }
+
+    UnitFamily_Collect(unitTypeId, player);
+
+    DamageUpgrade_ResetWalk();
+
+    modified = 0;
+    modifiedForms = 0;
+
+    for (i = 0; i < g_unitFamilyCount; i += 1) {
+        DamageUpgrade_DebugLine(player, "form " + g_unitFamily[i]);
+
+        formModified = DamageUpgrade_ApplyUnitType(g_unitFamily[i], player);
+
+        if (g_damageUpgradeFormDamage > 0) {
+            modifiedForms += 1;
+        }
+
+        modified += formModified;
+    }
+
+    if (modified == 0) {
+        DamageUpgrade_Notify(
+            player,
+            "Damage upgrade: no damage effect found for " + unitTypeId
+        );
+        return true;
+    }
+
+    outText = "Damage upgrade: " + unitTypeId +
+        " (+" + IntToString(c_damageUpgradeStep) +
+        " x" + IntToString(modified) + " effects";
+
+    if (g_unitFamilyCount > 1) {
+        outText = outText + ", " +
+            IntToString(modifiedForms) + "/" +
+            IntToString(g_unitFamilyCount) + " forms";
+    }
+
+    if (g_unitLinkCount > 0) {
+        linksText = "";
+
+        for (i = 0; i < g_unitLinkCount && i < 4; i += 1) {
+            if (linksText != "") {
+                linksText = linksText + ",";
+            }
+
+            linksText = linksText + g_unitLinkType[i];
+        }
+
+        outText = outText + ", links: " + linksText;
+    }
+
+    outText = outText + ")";
+
+    DamageUpgrade_Notify(player, outText);
 
     return true;
 }
 
 void DamageUpgrade_Init() {
-    trigger selectTrigger0;
-    trigger selectTrigger1;
-    trigger selectTrigger2;
-    trigger selectTrigger3;
-    trigger selectTrigger4;
-    trigger selectTrigger5;
-    trigger selectTrigger6;
-    trigger selectTrigger7;
-    trigger selectTrigger8;
-    trigger selectTrigger9;
-    trigger selectTrigger10;
-    trigger selectTrigger11;
-    trigger selectTrigger12;
-    trigger selectTrigger13;
-    trigger selectTrigger14;
-    trigger selectTrigger15;
     trigger hotkeyTrigger;
-
-    gv_damageUpgradeSelectedType = "";
-
-    selectTrigger0 = TriggerCreate("DamageUpgrade_OnUnitSelected");
-    TriggerAddEventUnitSelected(selectTrigger0, null, 0, true);
-
-    selectTrigger1 = TriggerCreate("DamageUpgrade_OnUnitSelected");
-    TriggerAddEventUnitSelected(selectTrigger1, null, 1, true);
-
-    selectTrigger2 = TriggerCreate("DamageUpgrade_OnUnitSelected");
-    TriggerAddEventUnitSelected(selectTrigger2, null, 2, true);
-
-    selectTrigger3 = TriggerCreate("DamageUpgrade_OnUnitSelected");
-    TriggerAddEventUnitSelected(selectTrigger3, null, 3, true);
-
-    selectTrigger4 = TriggerCreate("DamageUpgrade_OnUnitSelected");
-    TriggerAddEventUnitSelected(selectTrigger4, null, 4, true);
-
-    selectTrigger5 = TriggerCreate("DamageUpgrade_OnUnitSelected");
-    TriggerAddEventUnitSelected(selectTrigger5, null, 5, true);
-
-    selectTrigger6 = TriggerCreate("DamageUpgrade_OnUnitSelected");
-    TriggerAddEventUnitSelected(selectTrigger6, null, 6, true);
-
-    selectTrigger7 = TriggerCreate("DamageUpgrade_OnUnitSelected");
-    TriggerAddEventUnitSelected(selectTrigger7, null, 7, true);
-
-    selectTrigger8 = TriggerCreate("DamageUpgrade_OnUnitSelected");
-    TriggerAddEventUnitSelected(selectTrigger8, null, 8, true);
-
-    selectTrigger9 = TriggerCreate("DamageUpgrade_OnUnitSelected");
-    TriggerAddEventUnitSelected(selectTrigger9, null, 9, true);
-
-    selectTrigger10 = TriggerCreate("DamageUpgrade_OnUnitSelected");
-    TriggerAddEventUnitSelected(selectTrigger10, null, 10, true);
-
-    selectTrigger11 = TriggerCreate("DamageUpgrade_OnUnitSelected");
-    TriggerAddEventUnitSelected(selectTrigger11, null, 11, true);
-
-    selectTrigger12 = TriggerCreate("DamageUpgrade_OnUnitSelected");
-    TriggerAddEventUnitSelected(selectTrigger12, null, 12, true);
-
-    selectTrigger13 = TriggerCreate("DamageUpgrade_OnUnitSelected");
-    TriggerAddEventUnitSelected(selectTrigger13, null, 13, true);
-
-    selectTrigger14 = TriggerCreate("DamageUpgrade_OnUnitSelected");
-    TriggerAddEventUnitSelected(selectTrigger14, null, 14, true);
-
-    selectTrigger15 = TriggerCreate("DamageUpgrade_OnUnitSelected");
-    TriggerAddEventUnitSelected(selectTrigger15, null, 15, true);
 
     hotkeyTrigger = TriggerCreate("DamageUpgrade_OnHotkey");
     TriggerAddEventKeyPressed(
         hotkeyTrigger,
         c_playerAny,
-        c_keyNumPad2,
+        c_keyNumPad1,
         true,
-        0,
-        0,
-        0
-    );
-
-    UIDisplayMessage(
-        PlayerGroupAll(),
-        c_messageAreaChat,
-        StringToText("DamageUpgrade DEBUG: initialized")
+        c_keyModifierStateExclude,
+        c_keyModifierStateExclude,
+        c_keyModifierStateExclude
     );
 }

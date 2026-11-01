@@ -1,0 +1,35 @@
+//--------------------------------------------------------------------------------------------------
+// 选择状态
+//
+// 记录每个玩家最后选中的单位类型，供各个升级模块共用。
+// 玩家编号 0 到 15。
+//--------------------------------------------------------------------------------------------------
+
+string[16] g_selectedUnitType;
+
+bool Selection_OnUnitSelected(bool testConds, bool runActions) {
+    int player;
+    unit u;
+
+    if (!runActions) {
+        return true;
+    }
+
+    player = EventPlayer();
+    u = EventUnit();
+
+    if (u == null) {
+        return true;
+    }
+
+    g_selectedUnitType[player] = UnitGetType(u);
+
+    return true;
+}
+
+void Selection_Init() {
+    trigger selectTrigger;
+
+    selectTrigger = TriggerCreate("Selection_OnUnitSelected");
+    TriggerAddEventUnitSelected(selectTrigger, null, c_playerAny, true);
+}

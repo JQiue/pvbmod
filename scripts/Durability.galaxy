@@ -1,0 +1,214 @@
+//--------------------------------------------------------------------------------------------------
+// 全局耐久度
+//
+// 把所有单位类型的生命上限 / 初始生命、护盾上限 / 初始护盾按统一倍率放大，
+// 让交战、拆建筑都更慢，整局更"持久"。
+//
+// 只改"最大值"，不改任何伤害数字：
+//   - 远程 / 近战 / 技能的相对强弱不变，不会出现"某某兵突然打不动人"；
+//   - 玩家和 AI 一视同仁，双方都变耐打。
+//
+// 实现方式：不做全目录枚举。
+// 单位目录的条目表包含大量"只被引用、并未定义"的 id，CatalogEntryCount 会给出
+// 65536 这种越界数量，直接遍历必然刷错误。这里改成"按需缩放"：
+//   - 某个单位类型第一次出现在场上时才缩放它，同时按同倍率放大当前生命 / 护盾；
+//   - 之后同类型的单位出厂就是新数值。
+// 这样既不会漏，也不会产生目录报错。
+//--------------------------------------------------------------------------------------------------
+
+include "TriggerLibs/NativeLib"
+
+// 全局倍率：1.5 表示所有单位生命/护盾 ×1.5。想要更长就调大（例如 "2.0"）。
+// 注意：字符串常量用于目录乘法，fixed 常量用于当前值换算，两边要一起改。
+const string c_durabilityLifeScale = "1.5";
+const string c_durabilityShieldScale = "1.5";
+const fixed c_durabilityLifeFactor = 1.5;
+const fixed c_durabilityShieldFactor = 1.5;
+
+const int c_durabilityTypeCapacity = 1024;
+
+string[1024] g_durabilityScaledTypes;
+int g_durabilityScaledCount = 0;
+
+bool Durability_IsPlayedPlayer(int player) {
+    int playerType;
+
+    playerType = PlayerType(player);
+
+    return playerType == c_playerTypeUser ||
+        playerType == c_playerTypeComputer ||
+        playerType == c_playerTypeHostile;
+}
+
+bool Durability_IsScaled(string unitTypeId) {
+    int i;
+
+    for (i = 0; i < g_durabilityScaledCount; i += 1) {
+        if (g_durabilityScaledTypes[i] == unitTypeId) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void Durability_MarkScaled(string unitTypeId) {
+    if (g_durabilityScaledCount >= c_durabilityTypeCapacity) {
+        return;
+    }
+
+    g_durabilityScaledTypes[g_durabilityScaledCount] = unitTypeId;
+    g_durabilityScaledCount += 1;
+}
+
+// 单个单位类型的耐久倍率（字段不存在时 CatalogFieldValueModify 会返回 false，直接忽略）。
+void Durability_ScaleType(string unitTypeId, int player) {
+    CatalogFieldValueModify(
+        c_gameCatalogUnit, unitTypeId, "LifeMax", player,
+        c_durabilityLifeScale, c_upgradeOperationMultiply
+    );
+    CatalogFieldValueModify(
+        c_gameCatalogUnit, unitTypeId, "LifeStart", player,
+        c_durabilityLifeScale, c_upgradeOperationMultiply
+    );
+    CatalogFieldValueModify(
+        c_gameCatalogUnit, unitTypeId, "ShieldsMax", player,
+        c_durabilityShieldScale, c_upgradeOperationMultiply
+    );
+    CatalogFieldValueModify(
+        c_gameCatalogUnit, unitTypeId, "ShieldsStart", player,
+        c_durabilityShieldScale, c_upgradeOperationMultiply
+    );
+}
+
+// 目录是按玩家分开的，所以每个在场玩家都要改一遍。
+void Durability_ScaleTypeForPlayers(string unitTypeId) {
+    int player;
+
+    for (player = 0; player < 16; player += 1) {
+        if (Durability_IsPlayedPlayer(player)) {
+            Durability_ScaleType(unitTypeId, player);
+        }
+    }
+}
+
+// 刚创建的单位：目录改了，上限会变大，但当前血量还是旧值，按同倍率放大，保持血条比例。
+void Durability_ScaleCurrentOfUnit(unit u) {
+    fixed currentLife;
+    fixed maxShields;
+    fixed currentShields;
+
+    currentLife = UnitGetPropertyFixed(u, c_unitPropLife, c_unitPropCurrent);
+
+    if (currentLife > 0.0) {
+        UnitSetPropertyFixed(u, c_unitPropLife, currentLife * c_durabilityLifeFactor);
+    }
+
+    maxShields = UnitGetPropertyFixed(u, c_unitPropShieldsMax, c_unitPropCurrent);
+
+    if (maxShields > 0.0) {
+        currentShields = UnitGetPropertyFixed(u, c_unitPropShields, c_unitPropCurrent);
+        UnitSetPropertyFixed(u, c_unitPropShields, currentShields * c_durabilityShieldFactor);
+    }
+}
+
+// 单位类型第一次登场时做缩放。
+bool Durability_OnUnitCreated(bool testConds, bool runActions) {
+    unit u;
+    string unitTypeId;
+
+    if (!runActions) {
+        return true;
+    }
+
+    // 注意：单位创建事件里必须用 EventUnitCreatedUnit()，EventUnit() 在这里是 null。
+    u = EventUnitCreatedUnit();
+
+    if (u == null) {
+        return true;
+    }
+
+    unitTypeId = UnitGetType(u);
+
+    if (unitTypeId == null || unitTypeId == "") {
+        return true;
+    }
+
+    if (Durability_IsScaled(unitTypeId)) {
+        return true;
+    }
+
+    Durability_MarkScaled(unitTypeId);
+    Durability_ScaleTypeForPlayers(unitTypeId);
+    Durability_ScaleCurrentOfUnit(u);
+
+    return true;
+}
+
+// 开局就在地图上的单位不会触发"创建"事件，单独扫一遍。
+void Durability_ScaleExistingUnits(int player) {
+    unitgroup group;
+    int count;
+    int i;
+    unit u;
+    string unitTypeId;
+    fixed maxLife;
+    fixed maxShields;
+
+    group = UnitGroup(
+        null, player, null,
+        UnitFilter(
+            0, 0, (1 << c_targetFilterMissile),
+            (1 << (c_targetFilterDead - 32))
+        ),
+        c_noMaxCount
+    );
+
+    count = UnitGroupCount(group, c_unitCountAll);
+
+    for (i = 0; i < count; i += 1) {
+        u = UnitGroupUnit(group, i);
+
+        if (u == null) {
+            continue;
+        }
+
+        unitTypeId = UnitGetType(u);
+
+        if (unitTypeId == null || unitTypeId == "") {
+            continue;
+        }
+
+        if (!Durability_IsScaled(unitTypeId)) {
+            Durability_MarkScaled(unitTypeId);
+            Durability_ScaleTypeForPlayers(unitTypeId);
+        }
+
+        // 已经存在的单位直接补满，避免出现"45/67"这种半血开局。
+        maxLife = UnitGetPropertyFixed(u, c_unitPropLifeMax, c_unitPropCurrent);
+
+        if (maxLife > 0.0) {
+            UnitSetPropertyFixed(u, c_unitPropLife, maxLife);
+        }
+
+        maxShields = UnitGetPropertyFixed(u, c_unitPropShieldsMax, c_unitPropCurrent);
+
+        if (maxShields > 0.0) {
+            UnitSetPropertyFixed(u, c_unitPropShields, maxShields);
+        }
+    }
+}
+
+void Durability_Init() {
+    trigger createdTrigger;
+    int player;
+
+    createdTrigger = TriggerCreate("Durability_OnUnitCreated");
+    TriggerAddEventUnitCreated(createdTrigger, null, null, null);
+
+    for (player = 0; player < 16; player += 1) {
+        if (Durability_IsPlayedPlayer(player)) {
+            Durability_ScaleExistingUnits(player);
+        }
+    }
+}

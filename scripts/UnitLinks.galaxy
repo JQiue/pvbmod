@@ -1,0 +1,136 @@
+//--------------------------------------------------------------------------------------------------
+// 关联单位
+//
+// 有些单位的攻击来自它"衍生"出来的单位，而不是它自己的武器：
+//   - 航母：CarrierHangar（CAbilArmMagazine）的弹药单位是 Interceptor；
+//   - 巢虫领主：武器链里的 CEffectCreateUnit 会造出 Broodling；
+//   - 虫群宿主：造出 Locust。
+//
+// 这些单位登记在这里，升级时与被选中的单位一起处理（只跟进一层，避免互相召唤时递归）。
+// 由 scripts/DamageUpgrade 与 scripts/WeaponUpgrade 共用。
+//--------------------------------------------------------------------------------------------------
+
+include "TriggerLibs/NativeLib"
+
+const int c_unitLinkCapacity = 16;
+
+string[16] g_unitLinkType;
+int g_unitLinkCount = 0;
+
+void UnitLinks_Reset() {
+    g_unitLinkCount = 0;
+}
+
+bool UnitLinks_Contains(string unitTypeId) {
+    int i;
+
+    for (i = 0; i < g_unitLinkCount; i += 1) {
+        if (g_unitLinkType[i] == unitTypeId) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void UnitLinks_Add(string unitTypeId) {
+    if (unitTypeId == "") {
+        return;
+    }
+
+    if (!CatalogEntryIsValid(c_gameCatalogUnit, unitTypeId)) {
+        return;
+    }
+
+    // 目录的条目表里还有一堆"只被引用、并未定义"的名字（比如某个 Effect 的 id），
+    // 它们也能通过 IsValid，但取不到 scope。要求有 scope 才算真单位。
+    if (CatalogEntryScope(c_gameCatalogUnit, unitTypeId) == "") {
+        return;
+    }
+
+    if (UnitLinks_Contains(unitTypeId)) {
+        return;
+    }
+
+    if (g_unitLinkCount >= c_unitLinkCapacity) {
+        return;
+    }
+
+    g_unitLinkType[g_unitLinkCount] = unitTypeId;
+    g_unitLinkCount += 1;
+}
+
+// 单位自带的弹药/机库单位：CAbilArmMagazine.InfoArray[j].Unit。
+void UnitLinks_CollectFromAbilities(string unitTypeId, int player) {
+    int abilCount;
+    int i;
+    int j;
+    int infoCount;
+    string abilId;
+    string scope;
+    string linked;
+
+    abilCount = CatalogFieldValueCount(
+        c_gameCatalogUnit, unitTypeId, "AbilArray", player
+    );
+
+    for (i = 0; i < abilCount; i += 1) {
+        abilId = CatalogFieldValueGet(
+            c_gameCatalogUnit,
+            unitTypeId,
+            "AbilArray[" + IntToString(i) + "].Link",
+            player
+        );
+
+        if (abilId == "") {
+            continue;
+        }
+
+        if (!CatalogEntryIsValid(c_gameCatalogAbil, abilId)) {
+            continue;
+        }
+
+        scope = CatalogEntryScope(c_gameCatalogAbil, abilId);
+
+        if (scope != "CAbilArmMagazine") {
+            continue;
+        }
+
+        infoCount = CatalogFieldValueCount(
+            c_gameCatalogAbil, abilId, "InfoArray", player
+        );
+
+        // InfoArray 用 Ammo1/Ammo2 这类具名下标时 Count 可能为 0，兜底扫几个槽位。
+        if (infoCount <= 0) {
+            infoCount = 4;
+        }
+
+        for (j = 0; j < infoCount; j += 1) {
+            linked = CatalogFieldValueGet(
+                c_gameCatalogAbil,
+                abilId,
+                "InfoArray[" + IntToString(j) + "].Unit",
+                player
+            );
+
+            UnitLinks_Add(linked);
+        }
+    }
+}
+
+// 遍历看不到的召唤关系，手工补一张表。
+//
+// 有些单位召唤出来的小弟不是在"选中的单位"这条效果链里创建的，例如巢虫领主：
+// 它的攻击链只负责发射/落点，真正造出巢虫的那一环挂不到这条链上。
+// 想给这类小弟一起升级，就在这里登记"召唤者 -> 被召唤的单位"。
+// 右边写错也没关系：UnitLinks_Add 会校验，找不到的单位会被直接丢掉。
+void UnitLinks_CollectFromExtraTable(string unitTypeId) {
+    if (unitTypeId == "BroodLord" || unitTypeId == "BroodLordMP") {
+        UnitLinks_Add("Broodling");
+    }
+
+    if (unitTypeId == "SwarmHost" || unitTypeId == "SwarmHostMP") {
+        UnitLinks_Add("LocustMP");
+        UnitLinks_Add("Locust");
+    }
+}

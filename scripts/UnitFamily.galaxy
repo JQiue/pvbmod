@@ -1,0 +1,183 @@
+//--------------------------------------------------------------------------------------------------
+// 单位形态族
+//
+// SC2 里「能切换形态的单位」在目录里是多个独立的 CUnit，由一个 CAbilMorph 互相替换
+// （变形 = 销毁当前单位、按目标类型重新创建），所以升级只改一个类型时，另一个形态不会生效。
+//
+// 本模块从一个单位类型出发，找出属于同一个单位的所有形态：
+//   1. 读 CUnit.AbilArray[i].Link 取技能；
+//   2. 只认 scope 以 CAbilMorph 开头的技能（CAbilMorph / CAbilMorphPlacement），
+//      这样可以排除 CAbilTrain 等同样带 InfoArray.Unit 的技能；
+//   3. 读 CAbilMorph.InfoArray[j].Unit 得到目标类型；
+//   4. 目标类型必须能「直接变回」起始类型才算同一形态（双向判定），
+//      这样 跳虫->毒爆、蟑螂->破坏者、领主->眼虫 这类单向进化和建筑挂件不会被算进来。
+//
+// 结果放在 g_unitFamily[0..g_unitFamilyCount-1]，[0] 永远是起始类型。
+//--------------------------------------------------------------------------------------------------
+
+include "TriggerLibs/NativeLib"
+
+const int c_unitFamilyCapacity = 16;
+
+string[16] g_unitFamily;
+int g_unitFamilyCount = 0;
+
+bool UnitFamily_IsMorphScope(string scope) {
+    if (StringLength(scope) < 10) {
+        return false;
+    }
+
+    return StringEqual(StringSub(scope, 1, 10), "CAbilMorph", true);
+}
+
+void UnitFamily_Reset() {
+    g_unitFamilyCount = 0;
+}
+
+bool UnitFamily_Contains(string unitTypeId) {
+    int i;
+
+    for (i = 0; i < g_unitFamilyCount; i += 1) {
+        if (g_unitFamily[i] == unitTypeId) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void UnitFamily_Add(string unitTypeId) {
+    if (unitTypeId == "") {
+        return;
+    }
+
+    if (UnitFamily_Contains(unitTypeId)) {
+        return;
+    }
+
+    if (g_unitFamilyCount >= c_unitFamilyCapacity) {
+        return;
+    }
+
+    g_unitFamily[g_unitFamilyCount] = unitTypeId;
+    g_unitFamilyCount += 1;
+}
+
+// 目标类型是否存在直接变形回起始类型的技能。
+bool UnitFamily_CanMorphBack(string unitTypeId, string rootTypeId, int player) {
+    int abilCount;
+    int i;
+    int infoCount;
+    int j;
+    string abilId;
+    string scope;
+    string targetId;
+
+    abilCount = CatalogFieldValueCount(
+        c_gameCatalogUnit, unitTypeId, "AbilArray", player
+    );
+
+    for (i = 0; i < abilCount; i += 1) {
+        abilId = CatalogFieldValueGet(
+            c_gameCatalogUnit,
+            unitTypeId,
+            "AbilArray[" + IntToString(i) + "].Link",
+            player
+        );
+
+        if (abilId == "") {
+            continue;
+        }
+
+        scope = CatalogEntryScope(c_gameCatalogAbil, abilId);
+
+        if (!UnitFamily_IsMorphScope(scope)) {
+            continue;
+        }
+
+        infoCount = CatalogFieldValueCount(
+            c_gameCatalogAbil, abilId, "InfoArray", player
+        );
+
+        for (j = 0; j < infoCount; j += 1) {
+            targetId = CatalogFieldValueGet(
+                c_gameCatalogAbil,
+                abilId,
+                "InfoArray[" + IntToString(j) + "].Unit",
+                player
+            );
+
+            if (targetId == rootTypeId) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+// 收集同族形态，返回形态数量（至少 1）。结果从 g_unitFamily[0] 开始。
+int UnitFamily_Collect(string rootTypeId, int player) {
+    int abilCount;
+    int i;
+    int infoCount;
+    int j;
+    string abilId;
+    string scope;
+    string targetId;
+
+    UnitFamily_Reset();
+    UnitFamily_Add(rootTypeId);
+
+    abilCount = CatalogFieldValueCount(
+        c_gameCatalogUnit, rootTypeId, "AbilArray", player
+    );
+
+    for (i = 0; i < abilCount; i += 1) {
+        abilId = CatalogFieldValueGet(
+            c_gameCatalogUnit,
+            rootTypeId,
+            "AbilArray[" + IntToString(i) + "].Link",
+            player
+        );
+
+        if (abilId == "") {
+            continue;
+        }
+
+        scope = CatalogEntryScope(c_gameCatalogAbil, abilId);
+
+        if (!UnitFamily_IsMorphScope(scope)) {
+            continue;
+        }
+
+        infoCount = CatalogFieldValueCount(
+            c_gameCatalogAbil, abilId, "InfoArray", player
+        );
+
+        for (j = 0; j < infoCount; j += 1) {
+            targetId = CatalogFieldValueGet(
+                c_gameCatalogAbil,
+                abilId,
+                "InfoArray[" + IntToString(j) + "].Unit",
+                player
+            );
+
+            if (targetId == rootTypeId) {
+                continue;
+            }
+
+            if (UnitFamily_Contains(targetId)) {
+                continue;
+            }
+
+            if (!UnitFamily_CanMorphBack(targetId, rootTypeId, player)) {
+                continue;
+            }
+
+            UnitFamily_Add(targetId);
+        }
+    }
+
+    return g_unitFamilyCount;
+}

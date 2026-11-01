@@ -1,0 +1,218 @@
+//--------------------------------------------------------------------------------------------------
+// 技能冷却缩减
+//
+// 按 Ctrl + 小键盘 3：对当前选中的单位（含它的所有变形形态）减少技能冷却。
+//
+// 只动技能的 Cost[].Cooldown.TimeUse（每次 ×0.9），不改：
+//   - 能量/资源消耗（Cost[].Vital / Resource）
+//   - 伤害、射程、持续时间
+// 没有冷却的技能（Cost 里没有 Cooldown 值）会被跳过，不会凭空多出冷却。
+//
+// 和伤害升级一样按"选中单位类型"生效，所以先点一下兵，再按 Ctrl+3。
+//--------------------------------------------------------------------------------------------------
+
+include "TriggerLibs/NativeLib"
+
+// 每次按键的冷却倍率：0.9 = 冷却 -10%。
+const string c_cooldownUpgradeScale = "0.9";
+
+const int c_cooldownUpgradeCapacity = 64;
+
+// 同一次按键里已经处理过的技能（变形形态之间共用技能时只削一次）。
+string[64] g_cooldownVisited;
+int g_cooldownVisitedCount = 0;
+
+void AbilityUpgrade_Notify(int player, string inText) {
+    UIDisplayMessage(
+        PlayerGroupSingle(player),
+        c_messageAreaChat,
+        StringToText(inText)
+    );
+}
+
+bool AbilityUpgrade_IsVisited(string abilId) {
+    int i;
+
+    for (i = 0; i < g_cooldownVisitedCount; i += 1) {
+        if (g_cooldownVisited[i] == abilId) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void AbilityUpgrade_MarkVisited(string abilId) {
+    if (g_cooldownVisitedCount >= c_cooldownUpgradeCapacity) {
+        return;
+    }
+
+    g_cooldownVisited[g_cooldownVisitedCount] = abilId;
+    g_cooldownVisitedCount += 1;
+}
+
+// scope 的字段表里有没有这个字段。
+// 直接读不存在的字段会刷"无法读取目录字段"的触发器报错，所以先问字段表。
+bool AbilityUpgrade_ScopeHasField(string scope, string field) {
+    int count;
+    int i;
+
+    count = CatalogFieldCount(scope);
+
+    for (i = 0; i < count; i += 1) {
+        if (CatalogFieldGet(scope, i) == field) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// 削一个技能的所有冷却（Cost[0].Cooldown.TimeUse、Cost[1]...），返回改了几处。
+int AbilityUpgrade_ApplyCooldown(string abilId, int player) {
+    int modified;
+    int costCount;
+    int i;
+    string scope;
+    string path;
+    string value;
+
+    modified = 0;
+
+    if (abilId == "" || abilId == null) {
+        return 0;
+    }
+
+    if (!CatalogEntryIsValid(c_gameCatalogAbil, abilId)) {
+        return 0;
+    }
+
+    if (AbilityUpgrade_IsVisited(abilId)) {
+        return 0;
+    }
+
+    AbilityUpgrade_MarkVisited(abilId);
+
+    scope = CatalogEntryScope(c_gameCatalogAbil, abilId);
+
+    if (scope == "") {
+        return 0;
+    }
+
+    if (!AbilityUpgrade_ScopeHasField(scope, "Cost")) {
+        return 0;
+    }
+
+    costCount = CatalogFieldValueCount(
+        c_gameCatalogAbil, abilId, "Cost", player
+    );
+
+    for (i = 0; i < costCount; i += 1) {
+        path = "Cost[" + IntToString(i) + "].Cooldown.TimeUse";
+
+        value = CatalogFieldValueGet(c_gameCatalogAbil, abilId, path, player);
+
+        // 没设冷却（空或者 0）的技能跳过，避免"本来无冷却 → 乘出 0"这种无意义修改。
+        if (value == "" || value == "0" || value == "0.0") {
+            continue;
+        }
+
+        if (CatalogFieldValueModify(
+            c_gameCatalogAbil,
+            abilId,
+            path,
+            player,
+            c_cooldownUpgradeScale,
+            c_upgradeOperationMultiply
+        )) {
+            modified += 1;
+        }
+    }
+
+    return modified;
+}
+
+// 一个单位类型上挂的所有技能（AbilArray[i].Link）。
+int AbilityUpgrade_ApplyUnitType(string unitTypeId, int player) {
+    int total;
+    int abilCount;
+    int i;
+    string abilId;
+
+    total = 0;
+
+    abilCount = CatalogFieldValueCount(
+        c_gameCatalogUnit, unitTypeId, "AbilArray", player
+    );
+
+    for (i = 0; i < abilCount; i += 1) {
+        abilId = CatalogFieldValueGet(
+            c_gameCatalogUnit,
+            unitTypeId,
+            "AbilArray[" + IntToString(i) + "].Link",
+            player
+        );
+
+        total += AbilityUpgrade_ApplyCooldown(abilId, player);
+    }
+
+    return total;
+}
+
+bool AbilityUpgrade_OnHotkey(bool testConds, bool runActions) {
+    int player;
+    string unitTypeId;
+    int i;
+    int modified;
+    string outText;
+
+    if (!runActions) {
+        return true;
+    }
+
+    player = EventPlayer();
+    unitTypeId = g_selectedUnitType[player];
+
+    if (unitTypeId == "") {
+        AbilityUpgrade_Notify(player, "Select a unit first.");
+        return true;
+    }
+
+    UnitFamily_Collect(unitTypeId, player);
+
+    g_cooldownVisitedCount = 0;
+    modified = 0;
+
+    for (i = 0; i < g_unitFamilyCount; i += 1) {
+        modified += AbilityUpgrade_ApplyUnitType(g_unitFamily[i], player);
+    }
+
+    if (modified == 0) {
+        AbilityUpgrade_Notify(
+            player, "Cooldown: no ability cooldown found for " + unitTypeId
+        );
+        return true;
+    }
+
+    outText = "Cooldown: " + unitTypeId +
+        " (-10% x" + IntToString(modified) + " abilities)";
+
+    AbilityUpgrade_Notify(player, outText);
+
+    return true;
+}
+
+void AbilityUpgrade_Init() {
+    trigger cooldownTrigger;
+
+    cooldownTrigger = TriggerCreate("AbilityUpgrade_OnHotkey");
+    TriggerAddEventKeyPressed(
+        cooldownTrigger,
+        c_playerAny,
+        c_keyNumPad3,
+        true,
+        c_keyModifierStateExclude,   // 不带 Shift
+        c_keyModifierStateRequire,   // 必须带 Ctrl
+        c_keyModifierStateExclude    // 不带 Alt
+    );
+}

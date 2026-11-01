@@ -1,0 +1,159 @@
+//--------------------------------------------------------------------------------------------------
+// 玩家资源 / 人口
+//
+// 小键盘 0：立刻 +1000 晶矿、+1000 瓦斯（可重复叠加）
+// 小键盘 9：人口上限 +10，并同时补 10 点可用人口
+// 小键盘 .：在聊天区列出所有玩家的晶矿 / 瓦斯 / 人口
+//
+// 全部走玩家属性（c_playerProp*），不碰采集逻辑，所以不会影响"已采集"统计。
+//--------------------------------------------------------------------------------------------------
+
+include "TriggerLibs/NativeLib"
+
+const int c_resourceBonus = 1000;
+const int c_supplyBonus = 10;
+
+void ResourceUpgrade_Notify(int player, string inText) {
+    UIDisplayMessage(
+        PlayerGroupSingle(player),
+        c_messageAreaChat,
+        StringToText(inText)
+    );
+}
+
+bool ResourceUpgrade_OnHotkey(bool testConds, bool runActions) {
+    int player;
+    int minerals;
+    int vespene;
+
+    if (!runActions) {
+        return true;
+    }
+
+    player = EventPlayer();
+
+    PlayerModifyPropertyInt(
+        player, c_playerPropMinerals, c_playerPropOperAdd, c_resourceBonus
+    );
+    PlayerModifyPropertyInt(
+        player, c_playerPropVespene, c_playerPropOperAdd, c_resourceBonus
+    );
+
+    minerals = PlayerGetPropertyInt(player, c_playerPropMinerals);
+    vespene = PlayerGetPropertyInt(player, c_playerPropVespene);
+
+    ResourceUpgrade_Notify(
+        player,
+        "Resources: +" + IntToString(c_resourceBonus) + " minerals / +" +
+        IntToString(c_resourceBonus) + " vespene (now " +
+        IntToString(minerals) + " / " + IntToString(vespene) + ")"
+    );
+
+    return true;
+}
+
+// 人口上限是玩家属性 c_playerPropSuppliesLimit；只抬上限的话还得补建筑，
+// 所以同时给 SuppliesMade（可用人口）加同样的量。
+bool SupplyUpgrade_OnHotkey(bool testConds, bool runActions) {
+    int player;
+    int used;
+    int made;
+    int limit;
+
+    if (!runActions) {
+        return true;
+    }
+
+    player = EventPlayer();
+
+    PlayerModifyPropertyInt(
+        player, c_playerPropSuppliesLimit, c_playerPropOperAdd, c_supplyBonus
+    );
+    PlayerModifyPropertyInt(
+        player, c_playerPropSuppliesMade, c_playerPropOperAdd, c_supplyBonus
+    );
+
+    used = PlayerGetPropertyInt(player, c_playerPropSuppliesUsed);
+    made = PlayerGetPropertyInt(player, c_playerPropSuppliesMade);
+    limit = PlayerGetPropertyInt(player, c_playerPropSuppliesLimit);
+
+    ResourceUpgrade_Notify(
+        player,
+        "Supply: +" + IntToString(c_supplyBonus) + " (now " +
+        IntToString(used) + "/" + IntToString(made) +
+        ", cap " + IntToString(limit) + ")"
+    );
+
+    return true;
+}
+
+string ResourceUpgrade_PlayerLine(int target) {
+    return "P" + IntToString(target + 1) +
+        ": minerals " + IntToString(
+            PlayerGetPropertyInt(target, c_playerPropMinerals)
+        ) +
+        ", vespene " + IntToString(
+            PlayerGetPropertyInt(target, c_playerPropVespene)
+        ) +
+        ", supply " + IntToString(
+            PlayerGetPropertyInt(target, c_playerPropSuppliesUsed)
+        ) + "/" + IntToString(
+            PlayerGetPropertyInt(target, c_playerPropSuppliesMade)
+        ) +
+        " (cap " + IntToString(
+            PlayerGetPropertyInt(target, c_playerPropSuppliesLimit)
+        ) + ")";
+}
+
+// 只列出真正占了玩家位的（玩家 / 电脑 / 敌对），跳过空位和中立。
+bool ResourceUpgrade_IsPlayedPlayer(int target) {
+    int playerType;
+
+    playerType = PlayerType(target);
+
+    return playerType == c_playerTypeUser ||
+        playerType == c_playerTypeComputer ||
+        playerType == c_playerTypeHostile;
+}
+
+bool ResourceUpgrade_OnReportHotkey(bool testConds, bool runActions) {
+    int player;
+    int i;
+
+    if (!runActions) {
+        return true;
+    }
+
+    player = EventPlayer();
+
+    ResourceUpgrade_Notify(player, "--- Resources ---");
+
+    for (i = 0; i < 16; i += 1) {
+        if (ResourceUpgrade_IsPlayedPlayer(i)) {
+            ResourceUpgrade_Notify(player, ResourceUpgrade_PlayerLine(i));
+        }
+    }
+
+    return true;
+}
+
+void ResourceUpgrade_Init() {
+    trigger resourceTrigger;
+    trigger supplyTrigger;
+    trigger reportTrigger;
+
+    resourceTrigger = TriggerCreate("ResourceUpgrade_OnHotkey");
+    TriggerAddEventKeyPressed(
+        resourceTrigger, c_playerAny, c_keyNumPad0, true, c_keyModifierStateExclude, c_keyModifierStateExclude, c_keyModifierStateExclude
+    );
+
+    supplyTrigger = TriggerCreate("SupplyUpgrade_OnHotkey");
+    TriggerAddEventKeyPressed(
+        supplyTrigger, c_playerAny, c_keyNumPad9, true, c_keyModifierStateExclude, c_keyModifierStateExclude, c_keyModifierStateExclude
+    );
+
+    reportTrigger = TriggerCreate("ResourceUpgrade_OnReportHotkey");
+    TriggerAddEventKeyPressed(
+        reportTrigger, c_playerAny, c_keyNumPadDecimal, true, c_keyModifierStateExclude, c_keyModifierStateExclude, c_keyModifierStateExclude
+    );
+}

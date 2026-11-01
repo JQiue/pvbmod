@@ -1,7 +1,21 @@
+include "scripts/Selection"
+include "scripts/UnitFamily"
+include "scripts/UnitLinks"
 include "scripts/LifeUpgrade"
 include "scripts/DamageUpgrade"
+include "scripts/WeaponUpgrade"
+include "scripts/UnitStatsUpgrade"
+include "scripts/AbilityUpgrade"
+include "scripts/ResourceUpgrade"
+include "scripts/Durability"
 
 void main() {
+  Selection_Init();
   LifeUpgrade_Init();
   DamageUpgrade_Init();
+  WeaponUpgrade_Init();
+  UnitStatsUpgrade_Init();
+  AbilityUpgrade_Init();
+  ResourceUpgrade_Init();
+  Durability_Init();
 }
